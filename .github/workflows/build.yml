@@ -17,13 +17,12 @@ jobs:
       - name: Build
         run: |
           ls -la
-          ZIP=$(ls *.zip | head -n 1)
-          echo "Memakai zip: $ZIP"
-          unzip -o -q "$ZIP" -d project
-          DIR=$(dirname "$(find project -name settings.gradle | head -n 1)")
+          rm -rf project
+          unzip -o -q FFTraceScanner_v3_source.zip -d project
+          DIR=$(dirname "$(find project -name 'settings.gradle*' | head -n 1)")
           cd "$DIR"
           gradle assembleDebug --no-daemon
       - uses: actions/upload-artifact@v4
         with:
-          name: FFTraceScanner-debug-apk
+          name: FFTraceScanner-v3-debug-apk
           path: project/**/app/build/outputs/apk/debug/*.apk
