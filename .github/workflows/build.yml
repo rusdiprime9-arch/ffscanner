@@ -16,7 +16,10 @@ jobs:
           gradle-version: '8.2'
       - name: Build
         run: |
-          unzip -o -q FFTraceScanner_fixed.zip -d project
+          ls -la
+          ZIP=$(ls *.zip | head -n 1)
+          echo "Memakai zip: $ZIP"
+          unzip -o -q "$ZIP" -d project
           DIR=$(dirname "$(find project -name settings.gradle | head -n 1)")
           cd "$DIR"
           gradle assembleDebug --no-daemon
