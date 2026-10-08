@@ -1,30 +1,83 @@
 name: Build APK
+
 on:
   push:
+    branches: [main]
   workflow_dispatch:
+
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: '17'
-      - uses: gradle/actions/setup-gradle@v3
+          java-version: 17
+
+      - uses: gradle/actions/setup-gradle@v4
         with:
-          gradle-version: '8.2'
-      - name: Build
+          gradle-version: 8.5
+
+      - name: Ekstrak ZIP AZX Scanner
         run: |
-          ls -la
-          rm -rf project
-          unzip -o -q FFTraceScanner_v3_source.zip -d project
-          DIR=$(dirname "$(find project -name 'settings.gradle*' | head -n 1)")
-          cd "$DIR"
-          find app/src/main/res/drawable -type f ! -name '*.xml' ! -name '*.png' -print -delete
-          sed -i 's|    implementation("androidx.core:core-ktx:1.12.0")|    implementation("androidx.core:core-ktx:1.12.0")\n    implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.7.0")|' app/build.gradle.kts
-          gradle assembleDebug --no-daemon
-      - uses: actions/upload-artifact@v4
-        with:
-          name: FFTraceScanner-v3-debug-apk
-          path: project/**/app/build/outputs/apk/debug/*.apk
+          ZIP=$(ls AZX-Scanner*.zip 2>/dev/null | sort -V | tail -n1)
+          if [ -z "$ZIP" ]; then
+            echo "::error::Tidak ada file AZX-Scanner*.zip di root repo"
+            exit 1
+          fi
+          echo "Memakai ZIP: $ZIP"
+          echo "ZIP_NAME=$ZIP" >> "$GITHUB_ENV"
+          rm -rf azx-src && mkdir azx-src
+          unzip -q "$ZIP" -d azx-src
+          SETTINGS=$(find azx-src -name settings.gradle.kts | head -n1)
+          if [ -z "$SETTINGS" ]; then
+            echo "::error::settings.gradle.kts tidak ditemukan di dalam ZIP"
+            exit 1
+          fi
+          echo "PROJ=$(dirname "$SETTINGS")" >> "$GITHUB_ENV"
+
+      - name: Build release APK (belum ditandatangani)
+        run: gradle -p "$PROJ" assembleRelease --no-daemon
+
+      - name: Tanda tangani APK
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          set -e
+          if [ -n "$KEYSTORE_BASE64" ]; then
+            echo "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/azx.jks"
+            KS_PASS="$KEYSTORE_PASSWORD"; K_ALIAS="$KEY_ALIAS"; K_PASS="$KEY_PASSWORD"
+            echo "Memakai keystore dari secrets (tanda tangan stabil)"
+          else
+            KS_PASS=azxazx123; K_ALIAS=azx; K_PASS=azxazx123
+            keytool -genkeypair -keystore "$RUNNER_TEMP/azx.jks" \
+              -storepass "$KS_PASS" -keypass "$K_PASS" -alias "$K_ALIAS" \
+              -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=AZX Scanner"
+            echo "Tanpa secrets: keystore sementara (uninstall app lama sebelum pasang)"
+          fi
+          SDK="${ANDROID_HOME:-$ANDROID_SDK_ROOT}"
+          BT=$(ls -d "$SDK"/build-tools/* | sort -V | tail -n1)
+          IN=$(ls "$PROJ"/app/build/outputs/apk/release/*.apk | head -n1)
+          "$BT/zipalign" -f -p 4 "$IN" "$RUNNER_TEMP/aligned.apk"
+          "$BT/apksigner" sign --ks "$RUNNER_TEMP/azx.jks" \
+            --ks-pass "pass:$KS_PASS" --key-pass "pass:$K_PASS" --ks-key-alias "$K_ALIAS" \
+            --out AZX-Scanner.apk "$RUNNER_TEMP/aligned.apk"
+          "$BT/apksigner" verify --print-certs AZX-Scanner.apk | head -n3
+          "$BT/aapt" dump badging AZX-Scanner.apk | head -n1
+
+      - name: Ganti APK lama di Release "latest"
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete latest --cleanup-tag -y || true
+          gh release create latest AZX-Scanner.apk \
+            --title "AZX Scanner (terbaru)" \
+            --notes "Dibangun dari ${ZIP_NAME}, commit ${{ github.sha }}"
